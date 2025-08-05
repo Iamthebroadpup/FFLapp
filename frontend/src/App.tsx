@@ -22,17 +22,23 @@ interface Projection {
 
 function App() {
   const [players, setPlayers] = useState<Player[]>([])
-  const [injuries, setInjuries] = useState<Injury[]>([])
-  const [projections, setProjections] = useState<Projection[]>([])
-  const [week, setWeek] = useState<number>(1)
-  const [position, setPosition] = useState<string>('QB')
+  const [playersLoading, setPlayersLoading] = useState(false)
+  const [playersError, setPlayersError] = useState<string | null>(null)
+
+  const fetchPlayers = () => {
+    setPlayersLoading(true)
+    setPlayersError(null)
+    axios
+      .get('/api/players')
+      .then((resp) => setPlayers(resp.data))
+      .catch((err) => {
+        setPlayersError(err.message || 'Failed to load players')
+      })
+      .finally(() => setPlayersLoading(false))
+  }
 
   useEffect(() => {
-    fetchPlayers().then(setPlayers)
-  }, [])
-
-  useEffect(() => {
-    fetchInjuries().then(setInjuries)
+    fetchPlayers()
   }, [])
 
   useEffect(() => {
@@ -42,56 +48,24 @@ function App() {
   return (
     <div>
       <h1>Fantasy Draft Assistant</h1>
-      <h2>Players</h2>
-      <ul>
-        {players.map((p) => (
-          <li key={p.id}>{p.name} - {p.position}</li>
-        ))}
-      </ul>
 
-      <h2>Injuries</h2>
-      <ul>
-        {injuries.map((i) => (
-          <li key={i.id || i.name}>{i.name} - {i.status}</li>
-        ))}
-      </ul>
-
-      <h2>Projections</h2>
-      <div>
-        <label>
-          Week:
-          <input type="number" min="1" value={week} onChange={(e) => setWeek(Number(e.target.value))} />
-        </label>
-        <label>
-          Position:
-          <select value={position} onChange={(e) => setPosition(e.target.value)}>
-            <option value="QB">QB</option>
-            <option value="RB">RB</option>
-            <option value="WR">WR</option>
-            <option value="TE">TE</option>
-            <option value="K">K</option>
-            <option value="DEF">DEF</option>
-          </select>
-        </label>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Player</th>
-            <th>Position</th>
-            <th>Points</th>
-          </tr>
-        </thead>
-        <tbody>
-          {projections.map((p) => (
-            <tr key={p.id || p.name}>
-              <td>{p.name}</td>
-              <td>{p.position}</td>
-              <td>{p.points}</td>
-            </tr>
+      {playersLoading && <p>Loading players...</p>}
+      {playersError && (
+        <div>
+          <p>Error: {playersError}</p>
+          <button onClick={fetchPlayers}>Retry</button>
+        </div>
+      )}
+      {!playersLoading && !playersError && (
+        <ul>
+          {players.map((p) => (
+            <li key={p.id}>
+              {p.name} - {p.position}
+            </li>
           ))}
-        </tbody>
-      </table>
+        </ul>
+      )}
+      <button onClick={fetchPlayers}>Refresh Players</button>
     </div>
   )
 }
