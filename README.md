@@ -32,7 +32,7 @@ npm run dev
 
 ## Data Integration Outline
 
-- `backend/ffn_api.py` wraps the Fantasy Football Nerd API (requires an API key via `FFN_API_KEY`).
+- `backend/ffn_api.py` wraps the Fantasy Football Nerd API (uses the `FFN_API_KEY` environment variable and defaults to the key `TEST`).
 - `backend/nfl_data.py` fetches play-by-play data from the NFL fastR repository.
 - `backend/data_service.py` demonstrates merging these sources into a single player pool loaded at server startup.
 

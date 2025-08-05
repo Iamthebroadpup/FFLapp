@@ -5,10 +5,11 @@ import requests
 from typing import Any, Dict
 
 BASE_URL = "https://api.fantasyfootballnerd.com/v1"
+DEFAULT_API_KEY = "TEST"
 
 
 def _get(endpoint: str, api_key: str | None = None, **params: Any) -> Dict[str, Any]:
-    key = api_key or os.getenv("FFN_API_KEY")
+    key = api_key or os.getenv("FFN_API_KEY", DEFAULT_API_KEY)
     if not key:
         raise ValueError("Fantasy Football Nerd API key is required")
     url = f"{BASE_URL}/{endpoint}/json/{key}"
