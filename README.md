@@ -43,7 +43,7 @@ The frontend proxies requests under `/api` to the backend, so keep both processe
 ## Data Integration Outline
 
 - `backend/ffn_api.py` wraps the Fantasy Football Nerd API (uses the `FFN_API_KEY` environment variable and defaults to the key `TEST`).
-- `backend/nfl_data.py` fetches play-by-play data from the NFL fastR repository.
+- `backend/nfl_data.py` fetches play-by-play data from the nflverse data release (stored as `.parquet`).
 - `backend/data_service.py` demonstrates merging these sources into a single player pool loaded at server startup.
 
 This skeleton sets up the draft state management and provides a minimal React UI that lists available players. Further features—such as custom scoring, draft recommendations, and advanced analytics—can be built on top of this foundation.
