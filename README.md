@@ -1,6 +1,13 @@
 # FFLapp
 
-Prototype modules for a fantasy football helper app.
+Prototype full‑stack modules for a fantasy football helper app.
+
+## Overview
+
+The backend ingests data from public APIs and play‑by‑play releases to build a
+player pool, and the frontend renders a simple list of available players. The
+project is meant to serve as a starting point for a personalized draft
+assistant that can run entirely on your machine during an in‑person draft.
 
 ## Project Structure
 
@@ -13,32 +20,33 @@ utils/      Misc helper functions
 
 ## Launching the App
 
-The project includes a FastAPI backend and a React frontend served by Vite. The following steps describe how to run the full stack in GitHub Codespaces.
+The project includes a FastAPI backend and a React frontend served by Vite. To
+run both pieces locally:
 
-### 1. Start the backend
+1. **Start the backend**
 
-Install Python dependencies and run the API server:
+   ```bash
+   pip install -r requirements.txt       # install Python dependencies
+   uvicorn backend.app:app --reload      # start FastAPI on http://localhost:8000
+   ```
 
-```bash
-pip install -r requirements.txt
-uvicorn backend.app:app --reload
-```
+2. **Start the frontend** in a separate terminal
 
-The backend listens on port **8000**.
+   ```bash
+   cd frontend
+   npm install                           # install JS dependencies
+   npm run dev                           # start Vite on http://localhost:5173
+   ```
 
-### 2. Start the frontend
+Codespaces forwards port **5173** automatically. When developing locally, open
+the URL printed by Vite in your browser. The frontend proxies `/api` requests to
+the backend, so keep both processes running for live data.
 
-In a separate terminal:
+### Using the App
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Vite serves the app on port **5173**. Codespaces automatically forwards this port; open it from the **Ports** panel or accept the prompt to preview the site.
-
-The frontend proxies requests under `/api` to the backend, so keep both processes running to use live data.
+Visiting the frontend displays a list of players fetched from the backend. You
+can refresh the list at any time by clicking **Refresh Players** in the UI.
+This minimal interface provides a foundation for more advanced draft tools.
 
 ## Data Integration Outline
 
@@ -47,3 +55,22 @@ The frontend proxies requests under `/api` to the backend, so keep both processe
 - `backend/data_service.py` demonstrates merging these sources into a single player pool loaded at server startup.
 
 This skeleton sets up the draft state management and provides a minimal React UI that lists available players. Further features—such as custom scoring, draft recommendations, and advanced analytics—can be built on top of this foundation.
+
+## Future Enhancements for In‑Person Drafts
+
+To turn this prototype into a full draft assistant for use with a physical
+whiteboard, consider adding:
+
+- **Clickable Draft Board** – allow selecting players in the UI to mark them as
+  drafted and assign them to specific teams.
+- **Roster Tracking** – display each team's roster, remaining positional needs,
+  and bye weeks.
+- **Recommendation Engine** – use projections, positional scarcity, and roster
+  construction to suggest the best pick for your upcoming turn.
+- **Offline Data Cache** – bundle player data so the app can run without an
+  internet connection during an in‑person draft.
+- **Export/Import State** – save the draft board to disk and reload it later to
+  resume or review the draft.
+
+These improvements would enable the app to predict optimal picks and keep track
+of selections as you click players off the board in real time.
