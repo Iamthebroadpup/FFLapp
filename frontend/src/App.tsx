@@ -1,10 +1,23 @@
 import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { fetchPlayers, fetchInjuries, fetchProjections } from './api'
 
 interface Player {
   id: string
   name: string
   position: string
+}
+
+interface Injury {
+  id?: string
+  name?: string
+  status?: string
+}
+
+interface Projection {
+  id?: string
+  name?: string
+  position?: string
+  points?: number
 }
 
 function App() {
@@ -28,9 +41,14 @@ function App() {
     fetchPlayers()
   }, [])
 
+  useEffect(() => {
+    fetchProjections(week, position).then(setProjections)
+  }, [week, position])
+
   return (
     <div>
       <h1>Fantasy Draft Assistant</h1>
+
       {playersLoading && <p>Loading players...</p>}
       {playersError && (
         <div>
