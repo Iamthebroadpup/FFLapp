@@ -9,19 +9,45 @@ interface Player {
 
 function App() {
   const [players, setPlayers] = useState<Player[]>([])
+  const [playersLoading, setPlayersLoading] = useState(false)
+  const [playersError, setPlayersError] = useState<string | null>(null)
+
+  const fetchPlayers = () => {
+    setPlayersLoading(true)
+    setPlayersError(null)
+    axios
+      .get('/api/players')
+      .then((resp) => setPlayers(resp.data))
+      .catch((err) => {
+        setPlayersError(err.message || 'Failed to load players')
+      })
+      .finally(() => setPlayersLoading(false))
+  }
 
   useEffect(() => {
-    axios.get('/api/players').then((resp) => setPlayers(resp.data))
+    fetchPlayers()
   }, [])
 
   return (
     <div>
       <h1>Fantasy Draft Assistant</h1>
-      <ul>
-        {players.map((p) => (
-          <li key={p.id}>{p.name} - {p.position}</li>
-        ))}
-      </ul>
+      {playersLoading && <p>Loading players...</p>}
+      {playersError && (
+        <div>
+          <p>Error: {playersError}</p>
+          <button onClick={fetchPlayers}>Retry</button>
+        </div>
+      )}
+      {!playersLoading && !playersError && (
+        <ul>
+          {players.map((p) => (
+            <li key={p.id}>
+              {p.name} - {p.position}
+            </li>
+          ))}
+        </ul>
+      )}
+      <button onClick={fetchPlayers}>Refresh Players</button>
     </div>
   )
 }
