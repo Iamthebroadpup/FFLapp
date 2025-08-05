@@ -11,24 +11,34 @@ scoring/    Fantasy scoring rules and calculators
 utils/      Misc helper functions
 ```
 
-## Dependencies
+## Launching the App
 
-Backend requirements are listed in `requirements.txt` and include FastAPI and Uvicorn. The frontend uses React with Vite; see `frontend/package.json` for npm dependencies.
+The project includes a FastAPI backend and a React frontend served by Vite. The following steps describe how to run the full stack in GitHub Codespaces.
 
-## Running the Backend
+### 1. Start the backend
+
+Install Python dependencies and run the API server:
 
 ```bash
 pip install -r requirements.txt
 uvicorn backend.app:app --reload
 ```
 
-## Running the Frontend
+The backend listens on port **8000**.
+
+### 2. Start the frontend
+
+In a separate terminal:
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
+Vite serves the app on port **5173**. Codespaces automatically forwards this port; open it from the **Ports** panel or accept the prompt to preview the site.
+
+The frontend proxies requests under `/api` to the backend, so keep both processes running to use live data.
 
 ## Data Integration Outline
 
