@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from functools import lru_cache
 
 from scoring import from_ffn_projection
 from .ffn_api import get_players, get_injuries, get_projections
