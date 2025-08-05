@@ -13,3 +13,7 @@ class ScoringRules:
     rushing_yards: float = 0.1
     receiving_yards: float = 0.1
     interception: float = -2.0
+    fumble: float = -2.0
+    two_point_conv: float = 2.0
+    field_goal_made: float = 3.0
+    extra_point: float = 1.0
