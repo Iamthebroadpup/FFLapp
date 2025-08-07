@@ -1,16 +1,19 @@
-import axios from 'axios'
-
-export const fetchPlayers = async () => {
-  const resp = await axios.get('/api/players')
-  return resp.data
+export async function bootstrap(settings: any) {
+  const r = await fetch('/api/bootstrap', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(settings)
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
-export const fetchInjuries = async () => {
-  const resp = await axios.get('/api/injuries')
-  return resp.data
-}
-
-export const fetchProjections = async (week: number, position: string) => {
-  const resp = await axios.get('/api/projections', { params: { week, position } })
-  return resp.data
+export async function getSuggestions(body: any) {
+  const r = await fetch('/api/suggestions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }

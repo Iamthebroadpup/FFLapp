@@ -1,5 +1,4 @@
-pandas
-pyarrow
-requests
 fastapi
-uvicorn[standard]
+uvicorn
+httpx
+pydantic
