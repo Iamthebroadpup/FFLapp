@@ -37,3 +37,13 @@ export type ScoringRules = {
   ppr: number
   te_premium: number
 }
+
+export type LeagueContext = {
+  snake: boolean
+  teams: number
+  pick_slot: number
+  round: number
+  total_rounds: number
+  kdst_gate_round: number
+}
+

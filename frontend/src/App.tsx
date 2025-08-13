@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Player, Suggestion, ScoringRules } from "./types";
+import { Player, Suggestion, ScoringRules, LeagueContext } from "./types";
 import {
   initSeason,
   listPlayers,
@@ -7,6 +7,7 @@ import {
   draftPlayer,
   getDrafted,
   setRules as saveRulesApi,
+  setContext as saveContextApi,
   undraftPlayer,
 } from "./api";
 import DraftBoard from "./components/DraftBoard";
@@ -50,15 +51,23 @@ export default function App() {
     ppr: 0.5,
     te_premium: 0,
   });
+  const [context, setContextState] = useState<LeagueContext>({
+    snake: true,
+    teams: 12,
+    pick_slot: 1,
+    round: 1,
+    total_rounds: 16,
+    kdst_gate_round: 12,
+  });
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Team names (first = YOU / "ME")
   const defaultTeams = useMemo(
     () =>
-      Array.from({ length: rules.league_size }, (_, i) =>
+      Array.from({ length: context.teams }, (_, i) =>
         i === 0 ? "ME" : `Team ${i + 1}`
       ),
-    [rules.league_size]
+    [context.teams]
   );
   const [teamNames, setTeamNames] = useState<string[]>(defaultTeams);
 
@@ -126,6 +135,12 @@ export default function App() {
   const onSaveRules = async (r: ScoringRules) => {
     const saved = await saveRulesApi(r);
     setRules(saved);
+    await refreshLists();
+  };
+
+  const onSaveContext = async (c: LeagueContext) => {
+    const saved = await saveContextApi(c);
+    setContextState(saved);
     await refreshLists();
   };
 
@@ -265,7 +280,9 @@ export default function App() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         rules={rules}
-        onSave={onSaveRules}
+        context={context}
+        onSaveRules={onSaveRules}
+        onSaveContext={onSaveContext}
       />
     </div>
   );
