@@ -1,4 +1,6 @@
 // frontend/src/api.ts
+import type { LeagueContext } from "./types";
+
 export const API_BASE =
   (import.meta as any).env?.VITE_API_BASE || "http://127.0.0.1:8000";
 
@@ -102,5 +104,13 @@ export async function setRules(rules: any) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(rules)
+  }).then(r => r.json());
+}
+
+export async function setContext(ctx: LeagueContext) {
+  return fetch(`${API_BASE}/api/context`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ctx)
   }).then(r => r.json());
 }
