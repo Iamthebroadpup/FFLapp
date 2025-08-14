@@ -24,6 +24,7 @@ export default function App() {
   const [drafted, setDrafted] = useState<{ player: Player; teamName: string }[]>(
     []
   );
+  const [error, setError] = useState<string | null>(null);
 
   // Search + per-panel position filters
   const [q, setQ] = useState("");
@@ -82,14 +83,31 @@ export default function App() {
 
   // ---- Data fetching ----
   async function refreshLists() {
-    const [P, S, D] = await Promise.all([
+    const [P, S, D] = await Promise.allSettled([
       listPlayers(q || undefined, posUnd || undefined),
       getSuggestions(12),
       getDrafted(),
     ]);
-    setPlayers(P);
-    setSuggestions(S);
-    setDrafted(D);
+    const errors: string[] = [];
+    if (P.status === "fulfilled") {
+      setPlayers(P.value);
+    } else {
+      console.error("listPlayers failed", P.reason);
+      errors.push("Failed to load players");
+    }
+    if (S.status === "fulfilled") {
+      setSuggestions(S.value);
+    } else {
+      console.error("getSuggestions failed", S.reason);
+      errors.push("Failed to load suggestions");
+    }
+    if (D.status === "fulfilled") {
+      setDrafted(D.value);
+    } else {
+      console.error("getDrafted failed", D.reason);
+      errors.push("Failed to load drafted players");
+    }
+    setError(errors.length ? errors.join("; ") : null);
   }
 
   // First load: init season then fetch lists
@@ -181,6 +199,8 @@ export default function App() {
           {/* Removed old global pos <select>; we now have per-panel filters */}
         </div>
       </div>
+
+      {error && <div style={{ color: "red", padding: 8 }}>{error}</div>}
 
       {/* Left: Suggestions with its own position filter */}
       <div className="panel left">
