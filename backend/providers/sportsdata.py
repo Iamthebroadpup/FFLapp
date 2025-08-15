@@ -93,7 +93,15 @@ async def fetch_all_data(season: str) -> Dict[str, Any]:
     injuries (best effort), and fallback season stats (prev year) if projections are empty.
     """
     if not API_KEY:
-        raise RuntimeError("Missing SportsData.io API key (set SPORTSDATA_API_KEY).")
+        return {
+            "players": [],
+            "byes": [],
+            "depth": [],
+            "projections": [],
+            "season_stats": [],
+            "injuries": [],
+            "error": "Missing SportsData.io API key (set SPORTSDATA_API_KEY).",
+        }
 
     s = _season_clean(season)
     year = int(s)

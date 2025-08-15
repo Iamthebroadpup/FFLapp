@@ -30,6 +30,10 @@ Open http://localhost:5173
 
 If your backend runs elsewhere, add `VITE_API_BASE=http://localhost:8000` to a `frontend/.env` file.
 
+### Environment variable
+
+The backend requires a `SPORTSDATA_API_KEY` in the environment. For local development, put it in `backend/.env` (from `.env.example`). For production deployments, export `SPORTSDATA_API_KEY` so the server can fetch player data. Without this key, `/api/init` will return an error and no players will load.
+
 ---
 
 ## What it uses

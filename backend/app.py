@@ -88,6 +88,8 @@ async def api_init(season: Optional[str] = None):
         raw = await fetch_all_data(season)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"SportsData fetch failed: {e}")
+    if isinstance(raw, dict) and raw.get("error"):
+        raise HTTPException(status_code=500, detail=raw["error"])
 
     normalized = normalize_players(raw)
 
