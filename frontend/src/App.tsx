@@ -113,9 +113,14 @@ export default function App() {
   // First load: init season then fetch lists
   useEffect(() => {
     (async () => {
-      await initSeason(season);
-      setInitd(true);
-      await refreshLists();
+      try {
+        await initSeason(season);
+        setInitd(true);
+        await refreshLists();
+      } catch (err) {
+        console.error("initSeason failed", err);
+        setError("Failed to initialize season");
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
