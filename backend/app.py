@@ -1,210 +1,306 @@
-import os
-from typing import Dict, List, Any, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from pydantic import BaseModel
 
-from models import ScoringRules, Player, Suggestion, InitSummary, LeagueContext, StrategyProfile, SuggestionV2
-from providers.sportsdata import fetch_all_data
+from models import Player, SuggestionV2, ScoringRules, LeagueContext, StrategyProfile
+import providers.sportsdata as sportsdata  # robust module import
 from logic.util import normalize_players
+from logic.engine_v2.reproject import reproject_points
 from logic.engine_v2.utility import suggest_v2
 
-load_dotenv()
-
-app = FastAPI(title="Fantasy Draft Assistant API")
+# ---- FastAPI app + CORS ----
+app = FastAPI(title="Fantasy Draft Assistant API", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # dev: loosen for local, tighten in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---- In-memory data store ----
 DATA: Dict[str, Any] = {
-    "players": {},         # player_id -> Player
-    "undrafted": set(),    # set of player_ids
-    "drafted": {},         # player_id -> teamName
-    "rules": ScoringRules().model_dump(),
-    "bye_counts": {},      # bye_week -> count (my team only)
-    "ctx": LeagueContext().model_dump(),
-    "strategy": StrategyProfile().model_dump(),
-    "history": [],         # ordered picks: {pid,pos,teamName}
-    "opponents": {},       # teamName -> {pos -> starters remaining}
+    "players": {},      # pid -> Player
+    "undrafted": set(), # set[pid]
+    "drafted": [],      # list[{"playerId": int, "teamName": str}]
+    "history": [],      # events (optional for engine)
+    "rules": ScoringRules().dict(),
+    "context": LeagueContext().dict(),
+    "strategy": StrategyProfile().dict(),
+    "opponents": {},
 }
 
+# ---- Request models ----
+class DraftReq(BaseModel):
+    playerId: int
+    teamName: str
+
+class UndraftReq(BaseModel):
+    playerId: int
+
+
+# ---- Helpers ----
 def _my_bye_counts() -> Dict[int, int]:
-    counts: Dict[int,int] = {}
-    for pid, team in DATA["drafted"].items():
-        if team != "ME": continue
-        p = DATA["players"].get(pid)
-        if p and p.bye_week:
-            counts[p.bye_week] = counts.get(p.bye_week, 0) + 1
+    """Count byes on MY roster; used by engine for balancing bye weeks."""
+    counts: Dict[int, int] = {}
+    pid_map: Dict[int, Player] = DATA["players"]
+    for d in DATA["drafted"]:
+        if d.get("teamName") != "ME":
+            continue
+        pid = d["playerId"]
+        p = pid_map.get(pid)
+        if not p:
+            continue
+        if p.bye_week is None:
+            continue
+        counts[p.bye_week] = counts.get(p.bye_week, 0) + 1
     return counts
 
-def _starter_template(rules: ScoringRules) -> Dict[str,int]:
-    return {
-        "QB": rules.roster_qb,
-        "RB": rules.roster_rb,
-        "WR": rules.roster_wr,
-        "TE": rules.roster_te,
-        "DST": rules.roster_dst,
-        "K":  rules.roster_k,
-        "FLEX": rules.roster_flex,  # handled as RB/WR/TE consumption
-    }
 
-def _recalc_opponents_needs():
-    # naive: derive remaining starters (excluding FLEX consumption) for each team by counting drafted positions
-    rules = ScoringRules(**DATA["rules"])
-    base = _starter_template(rules)
-    opps: Dict[str, Dict[str,int]] = {}
-    for team in set(DATA["drafted"].values()):
-        if team == "ME": continue
-        opps[team] = {"QB":base["QB"],"RB":base["RB"],"WR":base["WR"],"TE":base["TE"],"DST":base["DST"],"K":base["K"]}
-    for pid, team in DATA["drafted"].items():
-        if team == "ME": continue
-        p = DATA["players"].get(pid)
-        if not p: continue
-        pos = (p.position or "").upper()
-        if pos in ("QB","RB","WR","TE","DST","K"):
-            opps.setdefault(team, {"QB":base["QB"],"RB":base["RB"],"WR":base["WR"],"TE":base["TE"],"DST":base["DST"],"K":base["K"]})
-            if opps[team][pos] > 0:
-                opps[team][pos] -= 1
-            else:
-                # treat overflow as flex usage (very rough)
-                if pos in ("RB","WR","TE") and base["FLEX"]>0:
-                    # we won't track exact flex per team; this is fine for pressure calc
-                    pass
-    DATA["opponents"] = opps
+async def _fetch_all_wrapper(season: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Call whichever entrypoint exists in providers.sportsdata.
+    Expected to return a dict with keys: players, projections, byes, depth, season_stats
+    """
+    # Try the common names in order:
+    if hasattr(sportsdata, "fetch_all"):
+        return await sportsdata.fetch_all(season)
+    if hasattr(sportsdata, "fetch_all_data"):
+        return await sportsdata.fetch_all_data(season)
+    if hasattr(sportsdata, "fetch_all_sources"):
+        return await sportsdata.fetch_all_sources(season)
+    if hasattr(sportsdata, "get_all"):
+        return await sportsdata.get_all(season)
+    raise RuntimeError(
+        "providers.sportsdata is missing a fetch_all-like function. "
+        "Please expose fetch_all(season) or alias your existing entrypoint."
+    )
 
+
+# ---- Endpoints ----
 @app.get("/api/health")
 def health():
     return {"ok": True}
 
-@app.get("/api/init", response_model=InitSummary)
-async def api_init(season: Optional[str] = None):
-    season = season or os.getenv("SPORTSDATA_SEASON", "2025")
+
+@app.get("/api/init")
+async def init(season: Optional[int] = None):
+    """
+    Fetch all data from SportsData and build our in-memory dataset.
+    """
     try:
-        raw = await fetch_all_data(season)
+        raw = await _fetch_all_wrapper(season)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"SportsData fetch failed: {e}")
 
-    normalized = normalize_players(raw)
+    players = normalize_players(raw)
 
-    DATA["players"] = {pid: p for pid, p in normalized.items()}
-    DATA["undrafted"] = set(DATA["players"].keys())
-    DATA["drafted"] = {}
-    DATA["bye_counts"] = {}
-    DATA["history"] = {}
-    DATA["history"] = []
-    DATA["opponents"] = {}
+    DATA["players"] = players
+    DATA["undrafted"] = set(players.keys())
+    DATA["drafted"] = []
+    # Keep rules/context/strategy unless you want to reset them too
 
-    depth_teams = len({p.team for p in normalized.values() if p.team})
-    bye_count = len([p for p in normalized.values() if p.bye_week])
-    return InitSummary(players_count=len(DATA["players"]), depth_teams=depth_teams, bye_count=bye_count)
+    return {
+        "players_count": len(players),
+        "depth_teams": len({p.team for p in players.values() if p.team}),
+        "bye_count": len({p.bye_week for p in players.values() if p.bye_week}),
+    }
 
-@app.post("/api/keepers")
-def apply_keepers(keepers: List[Dict[str, Any]]):
-    """
-    keepers: [{ "playerId": 123, "teamName": "TeamA" }, ...]
-    """
-    for k in keepers:
-        pid = int(k.get("playerId"))
-        team = k.get("teamName") or "OTHER"
-        if pid in DATA["players"] and pid in DATA["undrafted"]:
-            DATA["undrafted"].remove(pid)
-            DATA["drafted"][pid] = team
-    DATA["bye_counts"] = _my_bye_counts()
-    _recalc_opponents_needs()
-    return {"ok": True}
 
 @app.get("/api/players", response_model=List[Player])
 def list_players(q: Optional[str] = None, pos: Optional[str] = None):
-    players = [p for pid, p in DATA["players"].items() if pid in DATA["undrafted"]]
+    """
+    Return UNDRAFTED players (with optional filters).
+    If undrafted set is empty (bad state), fall back to all players so UI never blanks.
+    """
+    # Primary source = undrafted
+    if DATA["undrafted"]:
+        players = [p for pid, p in DATA["players"].items() if pid in DATA["undrafted"]]
+    else:
+        # Fallback so the UI doesn't go blank if undrafted got wiped
+        players = list(DATA["players"].values())
+
+    # Filters
     if pos:
         players = [p for p in players if (p.position or "").upper() == pos.upper()]
     if q:
         ql = q.lower()
         players = [p for p in players if ql in p.name.lower() or (p.team and ql in p.team.lower())]
-    players.sort(key=lambda p: (-(p.projected_points or 0), p.adp or 9999, p.name))
-    return players[:500]
 
-@app.post("/api/draft")
-def draft_player(payload: dict):
-    pid = int(payload.get("playerId"))
-    team = payload.get("teamName", "OTHER")
-    if pid not in DATA["players"]:
-        raise HTTPException(404, "Unknown player")
-    if pid not in DATA["undrafted"]:
-        raise HTTPException(400, "Player already drafted")
-    DATA["undrafted"].remove(pid)
-    DATA["drafted"][pid] = team
-    DATA["bye_counts"] = _my_bye_counts()
-    p = DATA["players"][pid]
-    DATA["history"].append({"pid": pid, "pos": (p.position or "").upper(), "teamName": team})
-    _recalc_opponents_needs()
-    return {"ok": True}
+    # Only fill missing projected_points (do NOT overwrite feed values)
+    rules = ScoringRules(**DATA["rules"])
+    try:
+        pts = reproject_points(players, rules)
+        for i, p in enumerate(players):
+            if p.projected_points is None:
+                try:
+                    p.projected_points = float(pts[i])
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-@app.post("/api/undraft")
-def undraft_player(payload: dict):
-    pid = int(payload.get("playerId"))
-    if pid in DATA["drafted"]:
-        DATA["undrafted"].add(pid)
-        DATA["drafted"].pop(pid, None)
-        DATA["bye_counts"] = _my_bye_counts()
-        # remove last occurrence from history
-        for i in range(len(DATA["history"]) - 1, -1, -1):
-            if DATA["history"][i].get("pid") == pid:
-                DATA["history"].pop(i); break
-        _recalc_opponents_needs()
-    return {"ok": True}
+    # Sort: projection desc, ADP asc, Name
+    players.sort(key=lambda p: (-(p.projected_points or 0.0), p.adp or 9999, p.name))
+    return players
+
 
 @app.get("/api/undrafted", response_model=List[Player])
-def get_undrafted():
-    return [DATA["players"][pid] for pid in DATA["undrafted"]]
+def get_undrafted(pos: Optional[str] = None, q: Optional[str] = None):
+    """
+    Direct UNDRAFTED list with optional filters — useful as a frontend fallback.
+    """
+    if DATA["undrafted"]:
+        players = [DATA["players"][pid] for pid in DATA["undrafted"]]
+    else:
+        players = list(DATA["players"].values())
+
+    # Filters
+    if pos:
+        players = [p for p in players if (p.position or "").upper() == pos.upper()]
+    if q:
+        ql = q.lower()
+        players = [p for p in players if ql in p.name.lower() or (p.team and ql in p.team.lower())]
+
+    # Only fill missing projected_points (do NOT overwrite feed values)
+    rules = ScoringRules(**DATA["rules"])
+    try:
+        pts = reproject_points(players, rules)
+        for i, p in enumerate(players):
+            if p.projected_points is None:
+                try:
+                    p.projected_points = float(pts[i])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return players
+
 
 @app.get("/api/drafted")
 def get_drafted():
+    # Return [{ player, teamName }]
     out = []
-    for pid, team in DATA["drafted"].items():
+    for d in DATA["drafted"]:
+        pid = d["playerId"]
         p = DATA["players"].get(pid)
-        if p:
-            out.append({"player": p, "teamName": team})
+        if not p:
+            continue
+        out.append({"player": p, "teamName": d["teamName"]})
     return out
 
-@app.post("/api/rules", response_model=ScoringRules)
+
+@app.post("/api/draft")
+def draft(req: DraftReq):
+    pid = req.playerId
+    if pid not in DATA["players"]:
+        raise HTTPException(status_code=404, detail="Unknown player")
+    if pid not in DATA["undrafted"]:
+        # already drafted
+        return {"ok": True}
+    DATA["undrafted"].remove(pid)
+    DATA["drafted"].append({"playerId": pid, "teamName": req.teamName})
+    DATA["history"].append({"t": "draft", "pid": pid, "teamName": req.teamName})
+    return {"ok": True}
+
+
+@app.post("/api/undraft")
+def undraft(req: UndraftReq):
+    pid = req.playerId
+    # Remove latest matching drafted entry (in case drafted more than once in history)
+    for i in range(len(DATA["drafted"]) - 1, -1, -1):
+        if DATA["drafted"][i]["playerId"] == pid:
+            DATA["drafted"].pop(i)
+            break
+    DATA["undrafted"].add(pid)
+    DATA["history"].append({"t": "undraft", "pid": pid})
+    return {"ok": True}
+
+
+@app.post("/api/rules")
 def set_rules(rules: ScoringRules):
-    DATA["rules"] = rules.model_dump()
-    return rules
+    DATA["rules"] = rules.dict()
+    return {"ok": True}
 
-@app.post("/api/context", response_model=LeagueContext)
+
+@app.post("/api/context")
 def set_context(ctx: LeagueContext):
-    DATA["ctx"] = ctx.model_dump()
-    return LeagueContext(**DATA["ctx"])
+    DATA["context"] = ctx.dict()
+    return {"ok": True}
 
-@app.post("/api/strategy", response_model=StrategyProfile)
-def set_strategy(s: StrategyProfile):
-    DATA["strategy"] = s.model_dump()
-    return StrategyProfile(**DATA["strategy"])
+
+@app.post("/api/strategy")
+def set_strategy(strategy: StrategyProfile):
+    DATA["strategy"] = strategy.dict()
+    return {"ok": True}
+
 
 @app.get("/api/suggest_v2", response_model=List[SuggestionV2])
 def suggest_v2_endpoint(count: int = 12, pos: Optional[str] = None):
+    # Prepare inputs for the engine
+    all_players = (
+        [DATA["players"][pid] for pid in DATA["undrafted"]]
+        if DATA["undrafted"]
+        else list(DATA["players"].values())
+    )
     rules = ScoringRules(**DATA["rules"])
-    ctx = LeagueContext(**DATA["ctx"])
+    ctx = LeagueContext(**DATA["context"])
     strategy = StrategyProfile(**DATA["strategy"])
     bye_counts = _my_bye_counts()
-    all_players = list(DATA["players"].values())
 
-    scored = suggest_v2(
-        players=all_players,
-        drafted=DATA["drafted"],
-        rules=rules,
-        ctx=ctx,
-        my_bye_counts=bye_counts,
-        strategy=strategy,
-        count=count,
-        pos=pos,
-        history=DATA["history"],
-        opponents_needs=DATA["opponents"],
+    try:
+        scored = suggest_v2(
+            players=all_players,
+            drafted=DATA["drafted"],
+            rules=rules,
+            ctx=ctx,
+            my_bye_counts=bye_counts,
+            strategy=strategy,
+            count=count,
+            pos=pos,
+            history=DATA["history"],
+            opponents_needs=DATA["opponents"],
+        )
+        return scored
+    except Exception as e:
+        # Graceful fallback so UI always shows something
+        print("suggest_v2 error:", e)
+        pool = all_players
+        if pos:
+            pool = [p for p in pool if (p.position or "").upper() == pos.upper()]
+        pool = sorted(pool, key=lambda p: (-(p.projected_points or 0.0), p.adp or 9999, p.name))
+        fallback = [
+            SuggestionV2(player=p, score=float(p.projected_points or 0.0))
+            for p in pool[:max(1, count)]
+        ]
+        return fallback
+
+
+# Back-compat route for older frontends
+@app.get("/api/suggest", response_model=List[SuggestionV2])
+def suggest_compat(count: int = 12, pos: Optional[str] = None):
+    return suggest_v2_endpoint(count=count, pos=pos)
+
+
+# Debug helper to confirm feed mapping
+@app.get("/api/feed_status")
+def feed_status():
+    players = DATA["players"]
+    und = DATA["undrafted"]
+    with_proj = (
+        sum(1 for pid in und if players[pid].projected_points is not None)
+        if und else sum(1 for p in players.values() if p.projected_points is not None)
     )
-    return scored
+    with_adp = (
+        sum(1 for pid in und if (players[pid].adp or 0) > 0)
+        if und else sum(1 for p in players.values() if (p.adp or 0) > 0)
+    )
+    return {
+        "players_count": len(players),
+        "undrafted_count": len(und),
+        "with_projected_points": with_proj,
+        "with_adp": with_adp,
+    }

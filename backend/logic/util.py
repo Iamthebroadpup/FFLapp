@@ -1,9 +1,10 @@
 from typing import Dict, List, Any, Optional
 from models import Player
 
+# ---- Simple scoring fallback if feed points are missing ----
 def _points_from_statline(stat: dict) -> float:
     """
-    Very simple default (0.5 PPR) if FantasyPoints not provided by feed.
+    Very simple default (0.5 PPR) if FantasyPoints/FantasyPointsPPR not provided by feed.
     """
     return (
         (stat.get("PassingYards", 0) * 0.04)
@@ -11,71 +12,96 @@ def _points_from_statline(stat: dict) -> float:
         + (stat.get("Interceptions", 0) * -2)
         + (stat.get("RushingYards", 0) * 0.1)
         + (stat.get("RushingTouchdowns", 0) * 6)
+        + (stat.get("Receptions", 0) * 0.5)
         + (stat.get("ReceivingYards", 0) * 0.1)
         + (stat.get("ReceivingTouchdowns", 0) * 6)
-        + (stat.get("Receptions", 0) * 0.5)
         - (stat.get("FumblesLost", 0) * 2)
     )
 
-def normalize_players(raw) -> Dict[int, Player]:
+
+def _coerce_float(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def normalize_players(raw: Dict[str, Any]) -> Dict[int, Player]:
+    """
+    Build a map of PlayerID -> Player (pydantic model) using all available
+    feed artifacts: players, byes, depth charts, projections, injuries,
+    and (fallback) last-season statlines.
+    """
+    # 1) Seed players from the "players" master list
     players: Dict[int, Player] = {}
 
-    # Base player identities
-    for r in raw.get("players", []):
-        pid = int(r.get("PlayerID"))
+    for p in raw.get("players", []):
+        pid = p.get("PlayerID")
+        if pid is None:
+            continue
+        pid = int(pid)
+
+        name = p.get("Name") or p.get("ShortName") or (p.get("FirstName", "") + " " + p.get("LastName", ""))
+        pos = (p.get("Position") or "").upper()
+        team = p.get("Team")
+        age = _coerce_float(p.get("Age"))
+
         players[pid] = Player(
             player_id=pid,
-            name=f"{r.get('FirstName','').strip()} {r.get('LastName','').strip()}".strip(),
-            position=r.get("Position", ""),
-            team=r.get("Team"),
-            age=r.get("Age"),
-            years_exp=r.get("Experience"),
+            name=(name or "").strip(),
+            position=pos,
+            team=team,
+            age=age if age is not None else None,
+            bye_week=None,
+            adp=None,
+            projected_points=None,
+            depth_order=None,
+            committee_size=None,
         )
 
-    # Injuries
-    for inj in raw.get("injuries", []):
+    # 2) Attach bye weeks if present
+    bye_map: Dict[str, int] = {}
+    for b in raw.get("byes", []):
+        t = b.get("Team")
+        wk = b.get("ByeWeek", b.get("Week"))
+        if t and isinstance(wk, int):
+            bye_map[t] = wk
+
+    for p in players.values():
+        if p.team and p.team in bye_map:
+            p.bye_week = bye_map[p.team]
+
+    # 3) Depth
+    for d in raw.get("depth", []):
+        pid = d.get("PlayerID")
+        if pid is None:
+            continue
+        pid = int(pid)
+        if pid not in players:
+            continue
+        depth_order = d.get("DepthOrder")
         try:
-            pid = int(inj.get("PlayerID"))
+            if depth_order is not None:
+                players[pid].depth_order = int(depth_order)
         except Exception:
-            continue
-        if pid in players:
-            players[pid].injury_status = inj.get("Status") or inj.get("PracticeStatus")
+            pass
 
-    # Bye weeks
-    byes = raw.get("byes", [])
-    for b in byes:
-        team = b.get("Team")
-        bye_week = b.get("Week")
-        if team and bye_week:
-            for p in players.values():
-                if p.team == team:
-                    p.bye_week = bye_week
-
-    # Depth charts (depth order & committee size)
-    depth = raw.get("depth", [])
+    # 4) Committee sizes
     team_pos_counts: Dict[str, Dict[str, int]] = {}
-    for d in depth:
-        team = d.get("Team")
-        position = d.get("Position")
-        chart = d.get("DepthChart", [])
-        if not team or not position:
+    for p in players.values():
+        if not p.team or not p.position:
             continue
-        team_pos_counts.setdefault(team, {}).setdefault(position, 0)
-        count = 0
-        for c in chart:
-            pid = c.get("PlayerID")
-            if pid:
-                count += 1
-                pid = int(pid)
-                if pid in players:
-                    players[pid].depth_order = c.get("DepthOrder")
-        team_pos_counts[team][position] = count
+        team_pos_counts.setdefault(p.team, {})
+        team_pos_counts[p.team].setdefault(p.position, 0)
+        team_pos_counts[p.team][p.position] += 1
 
     for p in players.values():
         if p.team and p.position and p.team in team_pos_counts and p.position in team_pos_counts[p.team]:
             p.committee_size = team_pos_counts[p.team][p.position]
 
-    # Projections with ADP (best case)
+    # 5) Projections + ADP
     for proj in raw.get("projections", []):
         pid = proj.get("PlayerID")
         if pid is None:
@@ -84,31 +110,38 @@ def normalize_players(raw) -> Dict[int, Player]:
         if pid not in players:
             continue
 
-        # keep per-stat if present
-        players[pid].passing_yards = proj.get("PassingYards")
-        players[pid].passing_tds   = proj.get("PassingTouchdowns")
-        players[pid].interceptions = proj.get("Interceptions")
-        players[pid].rushing_yards = proj.get("RushingYards")
-        players[pid].rushing_tds   = proj.get("RushingTouchdowns")
-        players[pid].receptions    = proj.get("Receptions")
-        players[pid].receiving_yards = proj.get("ReceivingYards")
-        players[pid].receiving_tds   = proj.get("ReceivingTouchdowns")
-        players[pid].fumbles_lost    = proj.get("FumblesLost")
-        players[pid].two_pt_conversions = proj.get("TwoPointConversionPasses", 0) + proj.get("TwoPointConversionRuns", 0) + proj.get("TwoPointConversionReceptions", 0)
-
-        fp = proj.get("FantasyPoints")
+        # ---- Projected Points ----
+        fp = proj.get("FantasyPointsPPR")
+        if fp is None:
+            fp = proj.get("FantasyPoints")
         if fp is None:
             fp = _points_from_statline(proj)
-        players[pid].projected_points = float(fp)
+        fpf = _coerce_float(fp)
+        if fpf is not None:
+            players[pid].projected_points = fpf
 
-        adp = proj.get("AverageDraftPosition") or proj.get("ADP") or proj.get("AverageDraftPositionPPR")
-        if adp:
-            try:
-                players[pid].adp = float(adp)
-            except Exception:
-                pass
+        # ---- ADP ----
+        adp = proj.get("AverageDraftPositionPPR") or proj.get("AverageDraftPosition") or proj.get("ADP")
+        adpf = _coerce_float(adp)
+        if adpf is not None and adpf > 0:
+            players[pid].adp = adpf
 
-    # Fallback: previous season stats -> compute projected_points if still missing
+        # ---- Per-stat backfill for reproject_points ----
+        try:
+            if getattr(players[pid], "passing_yards", None) is None:
+                players[pid].passing_yards = _coerce_float(proj.get("PassingYards"))
+                players[pid].passing_tds = _coerce_float(proj.get("PassingTouchdowns"))
+                players[pid].interceptions = _coerce_float(proj.get("Interceptions"))
+                players[pid].rushing_yards = _coerce_float(proj.get("RushingYards"))
+                players[pid].rushing_tds = _coerce_float(proj.get("RushingTouchdowns"))
+                players[pid].receptions = _coerce_float(proj.get("Receptions"))
+                players[pid].receiving_yards = _coerce_float(proj.get("ReceivingYards"))
+                players[pid].receiving_tds = _coerce_float(proj.get("ReceivingTouchdowns"))
+                players[pid].fumbles_lost = _coerce_float(proj.get("FumblesLost"))
+        except Exception:
+            pass
+
+    # 6) Fallback: last season stats
     for stat in raw.get("season_stats", []):
         pid = stat.get("PlayerID")
         if pid is None:
@@ -116,20 +149,27 @@ def normalize_players(raw) -> Dict[int, Player]:
         pid = int(pid)
         if pid not in players:
             continue
+
         if players[pid].projected_points is None:
-            players[pid].projected_points = float(_points_from_statline(stat))
+            players[pid].projected_points = _points_from_statline(stat)
 
-        # if we never set per-stat, fill what we can
-        players[pid].passing_yards = players[pid].passing_yards or stat.get("PassingYards")
-        players[pid].passing_tds   = players[pid].passing_tds   or stat.get("PassingTouchdowns")
-        players[pid].interceptions = players[pid].interceptions or stat.get("Interceptions")
-        players[pid].rushing_yards = players[pid].rushing_yards or stat.get("RushingYards")
-        players[pid].rushing_tds   = players[pid].rushing_tds   or stat.get("RushingTouchdowns")
-        players[pid].receptions    = players[pid].receptions    or stat.get("Receptions")
-        players[pid].receiving_yards = players[pid].receiving_yards or stat.get("ReceivingYards")
-        players[pid].receiving_tds   = players[pid].receiving_tds   or stat.get("ReceivingTouchdowns")
-        players[pid].fumbles_lost    = players[pid].fumbles_lost    or stat.get("FumblesLost")
+        try:
+            if getattr(players[pid], "passing_yards", None) is None:
+                players[pid].passing_yards = _coerce_float(stat.get("PassingYards"))
+                players[pid].passing_tds = _coerce_float(stat.get("PassingTouchdowns"))
+                players[pid].interceptions = _coerce_float(stat.get("Interceptions"))
+                players[pid].rushing_yards = _coerce_float(stat.get("RushingYards"))
+                players[pid].rushing_tds = _coerce_float(stat.get("RushingTouchdowns"))
+                players[pid].receptions = _coerce_float(stat.get("Receptions"))
+                players[pid].receiving_yards = _coerce_float(stat.get("ReceivingYards"))
+                players[pid].receiving_tds = _coerce_float(stat.get("ReceivingTouchdowns"))
+                players[pid].fumbles_lost = _coerce_float(stat.get("FumblesLost"))
+        except Exception:
+            pass
 
-    # Filter to fantasy-relevant positions
-    filtered = {pid: p for pid, p in players.items() if p.position in ("QB", "RB", "WR", "TE", "K", "DST")}
+    # 7) Filter to fantasy positions
+    filtered = {
+        pid: p for pid, p in players.items()
+        if (p.position or "") in ("QB", "RB", "WR", "TE", "K", "DST")
+    }
     return filtered

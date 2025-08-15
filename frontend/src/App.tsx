@@ -13,23 +13,29 @@ import DraftBoard from "./components/DraftBoard";
 import SettingsDrawer from "./components/SettingsDrawer";
 import PositionFilter from "./components/PositionFilter";
 
+function fmt(v: any, digits = 1) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v.toFixed(digits);
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : '-';
+}
+
 export default function App() {
-  // ---- Top-level state ----
+  // ---- Top bar / session ----
   const [season, setSeason] = useState("2025");
   const [initd, setInitd] = useState(false);
 
+  // ---- Data ----
   const [players, setPlayers] = useState<Player[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [drafted, setDrafted] = useState<{ player: Player; teamName: string }[]>(
-    []
-  );
+  const [drafted, setDrafted] = useState<{ player: Player; teamName: string }[]>([]);
 
-  // Search + per-panel position filters
+  // ---- Filters ----
   const [q, setQ] = useState("");
-  const [posUnd, setPosUnd] = useState<string>(""); // UNDRAFTED filter (server-side)
+  const [posUnd, setPosUnd] = useState<string>(""); // UNDRAFTED filter (client-side)
   const [posSug, setPosSug] = useState<string>(""); // SUGGESTIONS filter (client-side)
 
-  // League rules + drawer
+  // ---- League rules + drawer ----
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [rules, setRules] = useState<ScoringRules>({
     league_size: 12,
     roster_qb: 1,
@@ -50,32 +56,31 @@ export default function App() {
     ppr: 0.5,
     te_premium: 0,
   });
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Team names (first = YOU / "ME")
+  // ---- Team names (index 0 is ME) ----
   const defaultTeams = useMemo(
-    () =>
-      Array.from({ length: rules.league_size }, (_, i) =>
-        i === 0 ? "ME" : `Team ${i + 1}`
-      ),
+    () => Array.from({ length: rules.league_size }, (_, i) => (i === 0 ? "ME" : `Team ${i + 1}`)),
     [rules.league_size]
   );
   const [teamNames, setTeamNames] = useState<string[]>(defaultTeams);
 
   useEffect(() => {
-    // When league size changes, preserve any edited names within the new size
-    setTeamNames((prev) => {
+    // Keep custom-edited names where possible when league size changes
+    setTeamNames(prev => {
       const next = [...defaultTeams];
-      for (let i = 0; i < Math.min(prev.length, next.length); i++) next[i] = prev[i];
+      for (let i = 0; i < Math.min(prev.length, next.length); i++) {
+        if (i === 0 && prev[i] !== "ME") next[i] = prev[i];
+        if (i > 0) next[i] = prev[i];
+      }
       return next;
     });
   }, [defaultTeams]);
 
-  // ---- Data fetching ----
+  // ---- Fetchers ----
   async function refreshLists() {
     const [P, S, D] = await Promise.all([
-      listPlayers(q || undefined, posUnd || undefined),
-      getSuggestions(12),
+      listPlayers(),
+      getSuggestions(12, posSug || undefined),
       getDrafted(),
     ]);
     setPlayers(P);
@@ -83,7 +88,7 @@ export default function App() {
     setDrafted(D);
   }
 
-  // First load: init season then fetch lists
+  // Initial load
   useEffect(() => {
     (async () => {
       await initSeason(season);
@@ -93,26 +98,42 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-fetch UNDRAFTED list when search or UND position changes
+  // Re-fetch when search or UND position changes
   useEffect(() => {
     if (!initd) return;
-    const id = setTimeout(() => {
-      refreshLists();
-    }, 200);
+    const id = setTimeout(() => { refreshLists(); }, 150);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, posUnd]);
 
-  // Client-side filtered suggestions by position
-  const filteredSuggestions = useMemo(
-    () =>
-      posSug
-        ? suggestions.filter((s) => s.player.position === posSug)
-        : suggestions,
-    [suggestions, posSug]
-  );
+  // ---- Derived lists ----
+  const playersFiltered = useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return players
+      .filter(p => !posUnd || (p.position || "").toUpperCase() === posUnd.toUpperCase())
+      .filter(p => {
+        if (!ql) return true;
+        return (
+          p.name.toLowerCase().includes(ql) ||
+          (p.team ? p.team.toLowerCase().includes(ql) : false)
+        );
+      });
+  }, [players, q, posUnd]);
+
+  const filteredSuggestions = useMemo(() => {
+    return posSug
+      ? suggestions.filter(s => (s.player.position || "").toUpperCase() === posSug.toUpperCase())
+      : suggestions;
+  }, [suggestions, posSug]);
 
   // ---- Actions ----
+  const onSaveRules = async (r: ScoringRules) => {
+    setRules(r);
+    await saveRulesApi(r);
+    // Recompute suggestions after rule change
+    await refreshLists();
+  };
+
   const onDraft = async (p: Player, teamName: string) => {
     await draftPlayer(p.player_id, teamName);
     await refreshLists();
@@ -123,14 +144,12 @@ export default function App() {
     await refreshLists();
   };
 
-  const onSaveRules = async (r: ScoringRules) => {
-    const saved = await saveRulesApi(r);
-    setRules(saved);
-    await refreshLists();
+  const onDrop = (p: Player, teamName: string) => {
+    onDraft(p, teamName);
   };
 
-  const renameTeam = (idx: number, name: string) => {
-    setTeamNames((prev) => prev.map((t, i) => (i === idx ? name || t : t)));
+  const renameTeam = (index: number, name: string) => {
+    setTeamNames(prev => prev.map((t, i) => (i === index ? (name || t) : t)));
   };
 
   // ---- Render ----
@@ -141,11 +160,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <strong>Fantasy Draft Assistant</strong>
           <span className="badge">Season</span>
-          <input
-            value={season}
-            onChange={(e) => setSeason(e.target.value)}
-            style={{ width: 80 }}
-          />
+          <input value={season} onChange={e => setSeason(e.target.value)} style={{ width: 80 }} />
           <button
             className="primary"
             onClick={async () => {
@@ -157,22 +172,27 @@ export default function App() {
           </button>
           <button onClick={() => setDrawerOpen(true)}>League Settings</button>
         </div>
+
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
           <input
             placeholder="Search players or teams..."
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          {/* Removed old global pos <select>; we now have per-panel filters */}
+          <div className="pos-picker">
+            <span className="badge">Suggestions</span>
+            <PositionFilter value={posSug} onChange={setPosSug} />
+          </div>
+          <div className="pos-picker">
+            <span className="badge">Undrafted</span>
+            <PositionFilter value={posUnd} onChange={setPosUnd} />
+          </div>
         </div>
       </div>
 
-      {/* Left: Suggestions with its own position filter */}
+      {/* Left: Suggestions */}
       <div className="panel left">
-        <div className="panel-header">
-          <h3>Suggestions</h3>
-          <PositionFilter value={posSug} onChange={setPosSug} />
-        </div>
+        <h3>Suggestions</h3>
         <div className="list">
           {filteredSuggestions.map((s) => (
             <div
@@ -180,83 +200,67 @@ export default function App() {
               className="player-card"
               draggable
               onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  "application/x-player-id",
-                  String(s.player.player_id)
-                );
+                e.dataTransfer.setData("application/x-player-id", String(s.player.player_id));
                 e.dataTransfer.setData("text/plain", s.player.name);
               }}
             >
               <div>
                 <div style={{ fontWeight: 700 }}>{s.player.name}</div>
                 <div className="badge">
-                  {s.player.team} • {s.player.position} • Bye{" "}
-                  {s.player.bye_week || "-"}
+                  {s.player.team} • {s.player.position} • Bye {s.player.bye_week ?? "-"}
                 </div>
                 <div className="badge">
-                  ADP {s.player.adp || "-"} • Proj{" "}
-                  {s.player.projected_points?.toFixed(1) || "-"}
+                  ADP {fmt(s.player.adp)} • Proj {fmt(s.player.projected_points)}
                 </div>
-                <div className="badge">
-                  {s.reasons.slice(0, 2).join(" • ")}
-                </div>
+                {Array.isArray((s as any).reasons) && (s as any).reasons.length > 0 ? (
+                  <div className="badge">{(s as any).reasons.slice(0, 2).join(" • ")}</div>
+                ) : null}
               </div>
               <div style={{ textAlign: "right" }}>{s.score.toFixed(1)}</div>
-              <button onClick={() => onDraft(s.player, teamNames[0])}>
-                Draft
-              </button>
+              <button onClick={() => onDraft(s.player, teamNames[0])}>Draft</button>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Main: Undrafted with its own position filter (server-side) */}
-      <div className="panel main">
-        <div className="panel-header">
-          <h3>Undrafted</h3>
-          <PositionFilter value={posUnd} onChange={setPosUnd} />
-        </div>
+      {/* Middle: Undrafted */}
+      <div className="panel middle">
+        <h3>Undrafted</h3>
         <div className="list">
-          {players.map((p) => (
+          {playersFiltered.map((p) => (
             <div
               key={p.player_id}
               className="player-card"
               draggable
               onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  "application/x-player-id",
-                  String(p.player_id)
-                );
+                e.dataTransfer.setData("application/x-player-id", String(p.player_id));
                 e.dataTransfer.setData("text/plain", p.name);
               }}
             >
               <div>
                 <div style={{ fontWeight: 700 }}>{p.name}</div>
                 <div className="badge">
-                  {p.team} • {p.position} • Bye {p.bye_week || "-"}
+                  {p.team} • {p.position} • Bye {p.bye_week ?? "-"}
                 </div>
                 <div className="badge">
-                  ADP {p.adp || "-"} • Proj{" "}
-                  {p.projected_points?.toFixed(1) || "-"}
+                  ADP {fmt(p.adp)} • Proj {fmt(p.projected_points)}
                 </div>
               </div>
-              <div style={{ textAlign: "right" }}>
-                {(p.projected_points || 0).toFixed(1)}
-              </div>
+              <div style={{ textAlign: "right" }}>{fmt(p.projected_points)}</div>
               <button onClick={() => onDraft(p, teamNames[0])}>Draft</button>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Right: Draft Board (vertical teams, horizontal chips) */}
+      {/* Right: Draft Board */}
       <div className="panel right">
         <DraftBoard
           drafted={drafted}
           teamNames={teamNames}
           onRenameTeam={renameTeam}
           onUndraft={onUndraft}
-          onDrop={onDraft}
+          onDrop={onDrop}
         />
       </div>
 
