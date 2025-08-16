@@ -42,10 +42,9 @@ async def fetch_player_projections(season: str | int) -> List[Dict[str, Any]]:
     year = _season_clean(season)
     season_forms = [year, f"{year}REG", f"{year}PRE"]
     path_templates = [
-        "/projections/json/PlayerSeasonProjectedStatsWithAdp/{s}",  # best (has ADP fields)
-        "/projections/json/PlayerSeasonProjectedStats/{s}",         # fallback (no ADP)
-        # legacy alias (just in case your tenant maps it)
-        "/projections/json/PlayerSeasonProjectionStatsWithADP/{s}",
+        "/projections/json/PlayerSeasonProjectionStats/{s}",          # includes ADP
+        "/projections/json/PlayerSeasonProjectionStatsWithADP/{s}",   # legacy alias, includes ADP
+        "/projections/json/PlayerSeasonProjectedStats/{s}",           # fallback (no ADP)
     ]
 
     errs: List[str] = []
